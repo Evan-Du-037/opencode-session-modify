@@ -646,10 +646,12 @@ function renderEditor() {
   }, "\u2190 \u8fd4\u56de");
   const titleInput = el("input", { class: "title", value: info.title || "", placeholder: "\u4f1a\u8bdd\u6807\u9898" });
   titleInput.addEventListener("input", () => { info.title = titleInput.value; updateSaveBtn(); });
+  const copyLatestBtn = el("button", { id: "copy-latest-btn", onclick: copyLatestTurn }, "\u590d\u5236\u6700\u8fd1\u4e00\u8f6e");
+  const copyAllBtn = el("button", { id: "copy-all-btn", onclick: copySession }, "\u590d\u5236\u5168\u90e8");
   const saveBtn = el("button", { id: "save-btn", class: "primary", onclick: saveAs }, "\u53e6\u5b58\u4e3a\u65b0\u4f1a\u8bdd");
   saveBtn.disabled = !hasChanges();
   layout.appendChild(el("div", { class: "diff-topbar" }, back, titleInput,
-    el("div", { style: { flex: "1" } }), saveBtn));
+    el("div", { style: { flex: "1" } }), copyLatestBtn, copyAllBtn, saveBtn));
 
   const msgs = state.session.messages || [];
   const diff = diffMessages(state.originalMessages, msgs);
@@ -923,6 +925,97 @@ function addReasoning(msg) {
   const parts = msg.parts || (msg.parts = []);
   parts.unshift({ id: "prt_" + ulid(), type: "reasoning", text: "" });
   render();
+}
+
+function formatForCopy(messages) {
+  const groups = [];
+  for (const msg of messages) {
+    const role = (msg.info && msg.info.role) || "user";
+    const parts = msg.parts || [];
+    const reasoning = parts
+      .filter(p => p.type === "reasoning")
+      .map(p => (p.text || "").trim())
+      .filter(Boolean);
+    const text = parts
+      .filter(p => p.type === "text" || !p.type)
+      .map(p => (p.text || "").trim())
+      .filter(Boolean);
+    const last = groups[groups.length - 1];
+    if (last && last.role === role) {
+      last.reasoning.push(...reasoning);
+      last.text.push(...text);
+    } else {
+      groups.push({ role, reasoning, text });
+    }
+  }
+  const out = [];
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const reasoning = g.reasoning.join(" ");
+    const text = g.text.join("\n");
+    if (!reasoning && !text) continue;
+    const prevRole = i > 0 ? groups[i - 1].role : null;
+    if (out.length && !(prevRole === "user" && g.role === "assistant")) out.push("");
+    if (g.role === "assistant") {
+      if (reasoning && text) out.push(`assistant: (think: ${reasoning})\n${text}`);
+      else if (reasoning) out.push(`assistant: (think: ${reasoning})`);
+      else out.push(`assistant: ${text}`);
+    } else {
+      out.push(`user: ${text}`);
+    }
+  }
+  return out.join("\n\n---------------------\n\n");
+}
+
+function latestTurnMessages(messages) {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (((messages[i].info || {}).role) === "user") { lastUserIdx = i; break; }
+  }
+  if (lastUserIdx === -1) return [];
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i > lastUserIdx; i--) {
+    if (((messages[i].info || {}).role) === "assistant") { lastAssistantIdx = i; break; }
+  }
+  if (lastAssistantIdx === -1) return messages.slice(lastUserIdx, lastUserIdx + 1);
+  return messages.slice(lastUserIdx, lastAssistantIdx + 1);
+}
+
+async function copyLatestTurn() {
+  if (!state.session) return;
+  const turn = latestTurnMessages(state.session.messages || []);
+  if (!turn.length) { toast("没有找到最近一轮对话", "err"); return; }
+  const text = formatForCopy(turn);
+  if (!text) { toast("没有可复制的内容", "err"); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("已复制最近一轮到剪贴板", "ok");
+  } catch (e) {
+    toast("复制失败: " + e.message, "err");
+  }
+}
+
+async function copySession() {
+  if (!state.session) return;
+  const text = formatForCopy(state.session.messages || []);
+  if (!text) { toast("没有可复制的内容", "err"); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("已复制到剪贴板", "ok");
+  } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) {}
+    document.body.removeChild(ta);
+    if (ok) toast("已复制到剪贴板", "ok");
+    else toast("复制失败: " + e.message, "err");
+  }
 }
 
 async function saveAs() {
