@@ -1023,9 +1023,12 @@ async function saveAs() {
   if (!hasChanges()) return state.clonedId;
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  const ts = pad(now.getMonth() + 1) + "-" + pad(now.getDate()) + " " + pad(now.getHours()) + ":" + pad(now.getMinutes());
+  const ts = pad(now.getMonth() + 1) + "-" + pad(now.getDate()) + " " + pad(now.getHours()) + ":" + pad(now.getMinutes()) +  ":" + pad(now.getSeconds());
   const origTitle = (state.session.info && state.session.info.title) || "(未命名)";
-  const newInfo = { ...state.session.info, title: origTitle + " [编辑于 " + ts + "]" };
+  let newTitle = origTitle;
+  const regex = /\s*\[编辑于\s*\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2}\]/g;
+  newTitle = newTitle.replace(regex, '').trim();
+  const newInfo = { ...state.session.info, time: { created: state.session.info.time.created, updated: Date.now() }, title: newTitle + " [编辑于 " + ts + "]" };
   const payload = { info: newInfo, messages: state.session.messages };
   if (MOCK) { toast("已保存（mock）", "ok"); return "mock"; }
   const origId = (state.session.info && state.session.info.id) || "";

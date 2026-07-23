@@ -106,7 +106,7 @@ async function listSessions(req: Request): Promise<Response> {
     const dataSql = `SELECT s.id, s.title, s.time_created, s.time_updated, s.directory, s.model, s.agent, s.parent_id,
       ${snippetExpr} as snippet
       FROM session s${whereSql}
-      ORDER BY s.time_created DESC LIMIT ${limit} OFFSET ${offset}`;
+      ORDER BY s.time_updated DESC LIMIT ${limit} OFFSET ${offset}`;
 
     const rows = db.prepare(dataSql).all(...snippetParams, ...whereParams);
     const sessions = rows.map((r: Record<string, unknown>) => {
