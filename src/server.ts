@@ -241,8 +241,17 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
     tmp = `/tmp/oc-import-${crypto.randomUUID()}.json`;
     await Bun.write(tmp, JSON.stringify(data));
 
+    let cwd: string | undefined;
+    try {
+      const db = await sqlite(dbPath());
+      const row = db.prepare("SELECT directory FROM session WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      const dir = row?.directory;
+      if (typeof dir === "string" && dir.length > 0) cwd = dir;
+    } catch {}
+
     const r = Bun.spawnSync({
       cmd: ["opencode", "import", tmp],
+      cwd,
       stdout: "pipe",
       stderr: "pipe",
     });
