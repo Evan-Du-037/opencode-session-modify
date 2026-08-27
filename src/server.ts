@@ -186,13 +186,14 @@ async function getSession(id: string): Promise<Response> {
 }
 
 function rewriteClone(data: any): void {
-  const newSes = sessionId();
+  let seq = 0;
+  const newSes = sessionId(seq++);
   const oldMsg2new = new Map<string, string>();
   for (const m of data.messages ?? []) {
     const oldId = m?.info?.id;
     let newId: string | undefined;
     if (typeof oldId === "string") {
-      newId = messageId();
+      newId = messageId(seq++);
       oldMsg2new.set(oldId, newId);
       m.info.id = newId;
     }
@@ -204,7 +205,7 @@ function rewriteClone(data: any): void {
       }
     }
     for (const p of m?.parts ?? []) {
-      p.id = partId();
+      p.id = partId(seq++);
       p.sessionID = newSes;
       if (newId) p.messageID = newId;
     }

@@ -22,18 +22,20 @@ function randomBase32(len: number): string {
   return s
 }
 
-function ulid(): string {
-  return ulidTime(Date.now()) + randomBase32(16)
+function ulid(id: number): string {
+  const idStr = String(id)
+  const padLen = Math.max(0, 16 - idStr.length)
+  return ulidTime(Date.now()) + '0'.repeat(padLen) + idStr
 }
 
-export function sessionId(): string {
-  return "ses_" + ulid()
+export function sessionId(id: number): string {
+  return "ses_" + ulid(id)
 }
 
-export function messageId(): string {
-  return "msg_" + ulid()
+export function messageId(id: number): string {
+  return "msg_" + ulid(id)
 }
 
-export function partId(): string {
-  return "prt_" + ulid()
+export function partId(id: number): string {
+  return "prt_" + ulid(id)
 }
