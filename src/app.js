@@ -923,7 +923,7 @@ function deletePart(msg, partIdx) {
 
 function addReasoning(msg) {
   const parts = msg.parts || (msg.parts = []);
-  parts.unshift({ id: "prt_" + ulid(), type: "reasoning", text: "" });
+  parts.unshift({ id: "prt_" + ulid(), type: "reasoning", text: "", time: { start: Date.now(), end: Date.now() } });
   render();
 }
 
