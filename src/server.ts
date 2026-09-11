@@ -1,12 +1,37 @@
 import { sessionId, messageId, partId } from "./ids";
+import { tmpdir, homedir } from "node:os";
+import { join } from "node:path";
+
+// Bundle the UI assets into the binary at compile time. With `type: "file"`,
+// Bun embeds the file content into the compiled .exe, so the exe is fully
+// self-contained — no need to ship index.html / app.js alongside.
+import indexHtmlAsset from "./index.html" with { type: "file" };
+import appJsAsset from "./app.js" with { type: "file" };
+
+const HTML_TEXT: string = await Bun.file(indexHtmlAsset).text();
+const JS_TEXT: string = await Bun.file(appJsAsset).text();
 
 const PORT = 17654;
-const INDEX_HTML = import.meta.dir + "/index.html";
+
+function homeDir(): string {
+  return process.env.HOME || process.env.USERPROFILE || homedir();
+}
+
+function tmpFile(prefix: string): string {
+  return join(tmpdir(), `${prefix}-${crypto.randomUUID()}.json`);
+}
 
 function openBrowser(url: string) {
-  const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+  let cmd: string[];
+  if (process.platform === "darwin") {
+    cmd = ["open", url];
+  } else if (process.platform === "win32") {
+    cmd = ["cmd", "/c", "start", "", url];
+  } else {
+    cmd = ["xdg-open", url];
+  }
   try {
-    Bun.spawn({ cmd: [cmd, url], stdout: "ignore", stderr: "ignore" });
+    Bun.spawn({ cmd, stdout: "ignore", stderr: "ignore" });
   } catch {}
 }
 
@@ -136,26 +161,29 @@ async function listDirs(): Promise<Response> {
     const rows = db.prepare(
       "SELECT DISTINCT directory FROM session ORDER BY directory;",
     ).all() as Record<string, unknown>[];
-    return json({ home: process.env.HOME || "", dirs: rows.map((r) => r.directory) });
+    return json({ home: homeDir(), dirs: rows.map((r) => r.directory) });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }
 }
 
-function exportSessionToFile(id: string, outFile: string): { ok: boolean; error?: string } {
+async function exportSessionToFile(id: string, outFile: string): Promise<{ ok: boolean; error?: string }> {
   const r = Bun.spawnSync({
-    cmd: ["sh", "-c", `opencode export ${shellQuote(id)} > ${shellQuote(outFile)} 2>/dev/null`],
+    cmd: ["opencode", "export", id],
+    stdout: "pipe",
+    stderr: "pipe",
   });
   if (r.exitCode !== 0) {
     return { ok: false, error: `export exited ${r.exitCode}` };
   }
+  await Bun.write(outFile, r.stdout);
   return { ok: true };
 }
 
 async function getSession(id: string): Promise<Response> {
   try {
-    const tmp = `/tmp/oc-export-${crypto.randomUUID()}.json`;
-    const ex = exportSessionToFile(id, tmp);
+    const tmp = tmpFile("oc-export");
+    const ex = await exportSessionToFile(id, tmp);
     if (!ex.ok) {
       try { Bun.unlinkSync(tmp); } catch {}
       return json({ error: ex.error ?? "export failed" }, 404);
@@ -186,7 +214,7 @@ async function getSession(id: string): Promise<Response> {
 }
 
 function rewriteClone(data: any): void {
-  let seq = 0;
+  let seq = 1;
   const newSes = sessionId(seq++);
   const oldMsg2new = new Map<string, string>();
   for (const m of data.messages ?? []) {
@@ -239,20 +267,22 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
 
     const newId = data.info.id;
 
-    tmp = `/tmp/oc-import-${crypto.randomUUID()}.json`;
-    await Bun.write(tmp, JSON.stringify(data));
+    let importCwd: string | undefined;
+    const dir = typeof data?.info?.directory === "string" ? data.info.directory.trim() : "";
+    if (dir) {
+      const escaped = dir.replace(/"/g, '\\"');
+      const probe = process.platform === "win32"
+        ? Bun.spawnSync({ cmd: ["cmd", "/c", `if exist "${escaped}" exit 0`], stdout: "pipe", stderr: "pipe" })
+        : Bun.spawnSync({ cmd: ["sh", "-c", `[ -d "${escaped}" ]`], stdout: "pipe", stderr: "pipe" });
+      if (probe.exitCode === 0) importCwd = dir;
+    }
 
-    let cwd: string | undefined;
-    try {
-      const db = await sqlite(dbPath());
-      const row = db.prepare("SELECT directory FROM session WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-      const dir = row?.directory;
-      if (typeof dir === "string" && dir.length > 0) cwd = dir;
-    } catch {}
+    tmp = tmpFile("oc-import");
+    await Bun.write(tmp, JSON.stringify(data));
 
     const r = Bun.spawnSync({
       cmd: ["opencode", "import", tmp],
-      cwd,
+      cwd: importCwd,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -273,31 +303,18 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
 }
 
 async function serveIndex(): Promise<Response> {
-  try {
-    const f = Bun.file(INDEX_HTML);
-    if (await f.exists()) {
-      return new Response(f, {
-        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" },
-      });
-    }
-    return new Response("index.html not found", { status: 404 });
-  } catch (e) {
-    return new Response(String(e), { status: 500 });
-  }
+  return new Response(HTML_TEXT, {
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" },
+  });
 }
 
 async function serveStatic(filename: string, mime: string): Promise<Response> {
-  try {
-    const f = Bun.file(import.meta.dir + "/" + filename);
-    if (await f.exists()) {
-      return new Response(f, {
-        headers: { "Content-Type": `${mime}; charset=utf-8`, "Cache-Control": "no-cache" },
-      });
-    }
-    return new Response(filename + " not found", { status: 404 });
-  } catch (e) {
-    return new Response(String(e), { status: 500 });
+  if (filename === "app.js") {
+    return new Response(JS_TEXT, {
+      headers: { "Content-Type": `${mime}; charset=utf-8`, "Cache-Control": "no-cache" },
+    });
   }
+  return new Response(filename + " not found", { status: 404 });
 }
 
 async function router(req: Request): Promise<Response> {
@@ -329,10 +346,6 @@ async function router(req: Request): Promise<Response> {
   if (path === "/app.js" && method === "GET") return serveStatic("app.js", "application/javascript");
 
   return json({ error: "not found", path }, 404);
-}
-
-function shellQuote(s: string): string {
-  return "'" + s.replace(/'/g, `'\\''`) + "'";
 }
 
 let _dbCache: { path: string; db: any } | null = null;

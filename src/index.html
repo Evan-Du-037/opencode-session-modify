@@ -254,6 +254,17 @@ mark {
 }
 .diff-topbar input.title { flex: 0 1 300px; font-size: 14px; font-weight: 600; }
 .diff-topbar button { white-space: nowrap; }
+.diff-topbar .dir-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
 
 .diff-container {
   flex: 1; overflow-y: auto;

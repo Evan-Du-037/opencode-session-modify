@@ -23,9 +23,9 @@ function randomBase32(len: number): string {
 }
 
 function ulid(id: number): string {
-  const idStr = String(id)
-  const padLen = Math.max(0, 16 - idStr.length)
-  return ulidTime(Date.now()) + '0'.repeat(padLen) + idStr
+  const idStr = String(id);
+  const padLen = Math.max(0, 16 - idStr.length);
+  return ulidTime(Date.now()) + '0'.repeat(padLen) + idStr;
 }
 
 export function sessionId(id: number): string {
