@@ -1,6 +1,12 @@
 import { sessionId, messageId, partId } from "./ids";
+import { mkdtemp, open, readFile, rm, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const PORT = 17654;
+const PORT = Number(process.env.OCEDIT_PORT ?? 17654);
+const DESKTOP = process.env.OCEDIT_DESKTOP === "1";
+const TOKEN = process.env.OCEDIT_TOKEN;
+const OPENCODE = process.env.OCEDIT_OPENCODE || "opencode";
 const INDEX_HTML = import.meta.dir + "/index.html";
 
 function openBrowser(url: string) {
@@ -20,28 +26,11 @@ function parseArgs(): { sessionId?: string } {
 
 let server: ReturnType<typeof Bun.serve> | null = null;
 
-function oc(args: string[]): { ok: boolean; stdout: string; stderr: string; exitCode: number } {
-  const r = Bun.spawnSync({ cmd: ["opencode", ...args] });
-  return {
-    ok: r.exitCode === 0,
-    stdout: r.stdout.toString(),
-    stderr: r.stderr.toString(),
-    exitCode: r.exitCode ?? -1,
-  };
-}
-
-function ocQuiet(args: string[]): { ok: boolean; exitCode: number; combined: string } {
-  const r = Bun.spawnSync({ cmd: ["opencode", ...args], stdout: "pipe", stderr: "pipe" });
-  return {
-    ok: r.exitCode === 0,
-    exitCode: r.exitCode ?? -1,
-    combined: (r.stdout?.toString() ?? "") + (r.stderr?.toString() ?? ""),
-  };
-}
-
 function dbPath(): string {
-  const r = Bun.spawnSync({ cmd: ["opencode", "db", "path"] });
-  return r.stdout.toString().trim();
+  const r = Bun.spawnSync({ cmd: [OPENCODE, "db", "path"] });
+  const path = r.stdout.toString().trim();
+  if (r.exitCode !== 0 || !path) throw new Error(`无法读取 OpenCode 数据库路径：${r.stderr.toString().slice(0, 500)}`);
+  return path;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -142,34 +131,24 @@ async function listDirs(): Promise<Response> {
   }
 }
 
-function exportSessionToFile(id: string, outFile: string): { ok: boolean; error?: string } {
-  const r = Bun.spawnSync({
-    cmd: ["sh", "-c", `opencode export ${shellQuote(id)} > ${shellQuote(outFile)} 2>/dev/null`],
-  });
-  if (r.exitCode !== 0) {
-    return { ok: false, error: `export exited ${r.exitCode}` };
-  }
-  return { ok: true };
-}
-
 async function getSession(id: string): Promise<Response> {
+  let directory: string | undefined;
   try {
-    const tmp = `/tmp/oc-export-${crypto.randomUUID()}.json`;
-    const ex = exportSessionToFile(id, tmp);
-    if (!ex.ok) {
-      try { Bun.unlinkSync(tmp); } catch {}
-      return json({ error: ex.error ?? "export failed" }, 404);
-    }
-    const f = Bun.file(tmp);
-    const exists = await f.exists();
-    if (!exists) {
-      return json({ error: "session not found" }, 404);
-    }
-    const text = await f.text();
-    await f.unlink?.().catch(() => {});
+    directory = await mkdtemp(join(tmpdir(), "oc-export-"));
+    const filename = join(directory, "session.json");
+    const output = await open(filename, "wx", 0o600);
+    let r: ReturnType<typeof Bun.spawnSync>;
     try {
-      Bun.unlinkSync(tmp);
-    } catch {}
+      // OpenCode exits before large asynchronous pipe writes finish. A regular
+      // file descriptor makes stdout writes synchronous and preserves all JSON.
+      r = Bun.spawnSync({ cmd: [OPENCODE, "export", id], stdout: output.fd, stderr: "pipe", stdin: "ignore" });
+    } finally {
+      await output.close();
+    }
+    if (r.exitCode !== 0) {
+      return json({ error: `export failed: ${r.stderr.toString().slice(0, 500)}` }, 404);
+    }
+    const text = await readFile(filename, "utf8");
     if (text.trim().length === 0) {
       return json({ error: "session not found" }, 404);
     }
@@ -182,6 +161,8 @@ async function getSession(id: string): Promise<Response> {
     return json(data);
   } catch (e) {
     return json({ error: String(e) }, 500);
+  } finally {
+    if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -239,7 +220,7 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
 
     const newId = data.info.id;
 
-    tmp = `/tmp/oc-import-${crypto.randomUUID()}.json`;
+    tmp = join(tmpdir(), `oc-import-${crypto.randomUUID()}.json`);
     await Bun.write(tmp, JSON.stringify(data));
 
     let cwd: string | undefined;
@@ -251,7 +232,7 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
     } catch {}
 
     const r = Bun.spawnSync({
-      cmd: ["opencode", "import", tmp],
+      cmd: [OPENCODE, "import", tmp],
       cwd,
       stdout: "pipe",
       stderr: "pipe",
@@ -266,7 +247,7 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
   } finally {
     if (tmp) {
       try {
-        await Bun.unlink(tmp);
+        await unlink(tmp);
       } catch {}
     }
   }
@@ -305,6 +286,10 @@ async function router(req: Request): Promise<Response> {
   const path = url.pathname;
   const method = req.method;
 
+  if (TOKEN && req.headers.get("X-Ocedit-Token") !== TOKEN) {
+    return json({ error: "unauthorized" }, 401);
+  }
+
   if (method === "OPTIONS") {
     return new Response(null, {
       status: 204,
@@ -331,10 +316,6 @@ async function router(req: Request): Promise<Response> {
   return json({ error: "not found", path }, 404);
 }
 
-function shellQuote(s: string): string {
-  return "'" + s.replace(/'/g, `'\\''`) + "'";
-}
-
 let _dbCache: { path: string; db: any } | null = null;
 async function sqlite(path: string): Promise<any> {
   if (_dbCache && _dbCache.path === path) return _dbCache.db;
@@ -349,6 +330,7 @@ export function startServer(port: number = PORT): ReturnType<typeof Bun.serve> {
   if (server) return server;
   server = Bun.serve({
     port,
+    hostname: "127.0.0.1",
     async fetch(req) {
       try {
         return await router(req);
@@ -369,10 +351,21 @@ export function stopServer(): void {
 }
 
 if (import.meta.main) {
+  if (DESKTOP && !TOKEN) throw new Error("Desktop mode requires OCEDIT_TOKEN");
   const { sessionId: sid } = parseArgs();
   const s = startServer(PORT);
   const url = sid ? `http://127.0.0.1:${s.port}/?session=${encodeURIComponent(sid)}` : `http://127.0.0.1:${s.port}/`;
   console.log(`Session editor running at ${url}`);
   if (sid) console.log(`Editing session: ${sid}`);
-  openBrowser(url);
+  if (DESKTOP) {
+    console.log(`OCEDIT_READY http://127.0.0.1:${s.port}`);
+    // Electron owns this pipe. Also exit if the desktop process crashes.
+    process.stdin.resume();
+    process.stdin.on("end", () => { stopServer(); process.exit(0); });
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.on(signal, () => { stopServer(); process.exit(0); });
+    }
+  } else {
+    openBrowser(url);
+  }
 }

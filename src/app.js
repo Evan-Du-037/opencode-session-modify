@@ -211,13 +211,14 @@ async function loadDirs() {
 }
 
 /* ========== Render ========== */
-function render() {
+function render({ preserveEditorScroll = false } = {}) {
+  const scrollPosition = preserveEditorScroll ? captureEditorScroll() : null;
   app.innerHTML = "";
   const editorMode = state.view === "editor";
   app.style.maxWidth = editorMode ? "100%" : "900px";
   app.style.padding = editorMode ? "0" : "16px";
   if (state.view === "list") renderList();
-  else renderEditor();
+  else renderEditor(scrollPosition);
 }
 
 function renderList() {
@@ -487,6 +488,7 @@ function openDirPicker() {
 }
 
 async function browseSystemDir() {
+  if (window.desktop) return window.desktop.pickDirectory();
   if (typeof window.showDirectoryPicker === "function") {
     try {
       const handle = await window.showDirectoryPicker();
@@ -628,7 +630,42 @@ function updateSaveBtn() {
   if (btn) btn.disabled = !hasChanges();
 }
 
-function renderEditor() {
+function captureEditorScroll() {
+  const container = document.getElementById("diff-scroll");
+  if (!container) return null;
+  const top = container.getBoundingClientRect().top;
+  const headerHeight = container.querySelector(".diff-header").offsetHeight;
+  // Keep nearby messages at the same screen position even if earlier rows
+  // change height. The next row is a fallback if a newly added row is deleted.
+  const anchors = [...container.querySelectorAll(".diff-row")]
+    .filter(row => row.getBoundingClientRect().bottom > top + headerHeight)
+    .slice(0, 2)
+    .map(row => ({
+      id: row.dataset.messageId,
+      current: row.dataset.current === "true",
+      offset: row.getBoundingClientRect().top - top,
+    }));
+  return { scrollTop: container.scrollTop, anchors };
+}
+
+function restoreEditorScroll(container, position) {
+  if (!position) return;
+  const rows = [...container.querySelectorAll(".diff-row")];
+  const top = container.getBoundingClientRect().top;
+  const headerHeight = container.querySelector(".diff-header").offsetHeight;
+  for (const anchor of position.anchors) {
+    const matches = rows.filter(row => anchor.id && row.dataset.messageId === anchor.id);
+    const row = matches.find(row => (row.dataset.current === "true") === anchor.current) || matches[0];
+    if (!row) continue;
+    // If a tall message shrinks, keep its remaining content in view.
+    const offset = Math.max(anchor.offset, headerHeight - row.offsetHeight + 1);
+    container.scrollTop += row.getBoundingClientRect().top - top - offset;
+    return;
+  }
+  container.scrollTop = position.scrollTop;
+}
+
+function renderEditor(scrollPosition = null) {
   if (state.loading) {
     app.appendChild(el("div", { class: "loading" },
       el("span", { class: "spinner" }), " \u52a0\u8f7d\u4e2d\u2026"));
@@ -672,7 +709,9 @@ function renderEditor() {
   app.appendChild(layout);
 
   requestAnimationFrame(() => {
+    if (!container.isConnected) return;
     container.querySelectorAll("textarea").forEach(autoResize);
+    restoreEditorScroll(container, scrollPosition);
     buildMinimap(container, minimap);
     setupMinimapInteraction(container, minimap);
     container.addEventListener("scroll", () => {
@@ -688,6 +727,8 @@ function renderDiffRow(entry) {
   const role = (msg && msg.info && msg.info.role) || "user";
   const gutterColor = GUTTER_COLORS[role] || "#888";
   const row = el("div", { class: "diff-row " + type });
+  row.dataset.messageId = msg.info?.id || "";
+  row.dataset.current = String(!!current);
 
   const gutter = el("div", { class: "diff-gutter", style: { background: gutterColor } });
   if (current) {
@@ -744,7 +785,7 @@ function renderCellSegments(cell, myMsg, otherMsg, side) {
       } else {
         const ta = el("textarea", { class: "text-edit", placeholder: "（空）" });
         ta.value = myText;
-        ta.addEventListener("input", () => { p.text = ta.value; autoResize(ta); });
+        ta.addEventListener("input", () => { p.text = ta.value; autoResize(ta); updateSaveBtn(); });
         ta.addEventListener("blur", () => refreshRow(cell, otherMsg, myMsg));
         cell.appendChild(ta);
       }
@@ -755,7 +796,7 @@ function renderCellSegments(cell, myMsg, otherMsg, side) {
         const wrap = el("div", { class: "reasoning-wrap" });
         const ta = el("textarea", { class: "text-edit reasoning", placeholder: "推理内容" });
         ta.value = p.text || "";
-        ta.addEventListener("input", () => { p.text = ta.value; autoResize(ta); });
+        ta.addEventListener("input", () => { p.text = ta.value; autoResize(ta); updateSaveBtn(); });
         ta.addEventListener("blur", () => refreshRow(cell, otherMsg, myMsg));
         wrap.appendChild(ta);
         wrap.appendChild(el("button", {
@@ -869,7 +910,7 @@ function deleteMessage(msg) {
   const idx = msgs.indexOf(msg);
   if (idx < 0) return;
   msgs.splice(idx, 1);
-  render();
+  render({ preserveEditorScroll: true });
 }
 
 function _tmplInfo(role) {
@@ -904,7 +945,7 @@ function addMessageAt(idx) {
     info,
     parts: [{ id: "prt_" + ulid(), type: "text", text: "" }],
   });
-  render();
+  render({ preserveEditorScroll: true });
 }
 
 function toggleRole(msg) {
@@ -912,19 +953,19 @@ function toggleRole(msg) {
   const newRole = oldRole === "user" ? "assistant" : "user";
   const tmpl = _tmplInfo(newRole);
   msg.info = { ...tmpl, id: msg.info?.id };
-  render();
+  render({ preserveEditorScroll: true });
 }
 
 function deletePart(msg, partIdx) {
   const parts = msg.parts || [];
   parts.splice(partIdx, 1);
-  render();
+  render({ preserveEditorScroll: true });
 }
 
 function addReasoning(msg) {
   const parts = msg.parts || (msg.parts = []);
   parts.unshift({ id: "prt_" + ulid(), type: "reasoning", text: "", time: { start: Date.now(), end: Date.now() } });
-  render();
+  render({ preserveEditorScroll: true });
 }
 
 function formatForCopy(messages) {
@@ -988,7 +1029,7 @@ async function copyLatestTurn() {
   const text = formatForCopy(turn);
   if (!text) { toast("没有可复制的内容", "err"); return; }
   try {
-    await navigator.clipboard.writeText(text);
+    await copyText(text);
     toast("已复制最近一轮到剪贴板", "ok");
   } catch (e) {
     toast("复制失败: " + e.message, "err");
@@ -1000,7 +1041,7 @@ async function copySession() {
   const text = formatForCopy(state.session.messages || []);
   if (!text) { toast("没有可复制的内容", "err"); return; }
   try {
-    await navigator.clipboard.writeText(text);
+    await copyText(text);
     toast("已复制到剪贴板", "ok");
   } catch (e) {
     const ta = document.createElement("textarea");
@@ -1016,6 +1057,11 @@ async function copySession() {
     if (ok) toast("已复制到剪贴板", "ok");
     else toast("复制失败: " + e.message, "err");
   }
+}
+
+async function copyText(text) {
+  if (window.desktop) return window.desktop.copyText(text);
+  return navigator.clipboard.writeText(text);
 }
 
 async function saveAs() {
@@ -1075,6 +1121,12 @@ function mockSession() {
 }
 
 /* ========== Boot ========== */
+window.addEventListener("beforeunload", event => {
+  if (!hasChanges()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
 if (MOCK) {
   state.sessions = mockSessionList();
   state.total = state.sessions.length;
