@@ -346,6 +346,20 @@ mark {
   padding: 3px 6px; margin: 2px 0;
   background: rgba(0,0,0,.2); border-radius: 3px;
 }
+.tool-block { margin: 3px 0; white-space: normal; min-width: 0; }
+.tool-block > summary { cursor: pointer; color: var(--text-dim); user-select: none; }
+.tool-body { padding: 2px 6px 6px; border-left: 2px solid var(--border); }
+.tool-field { margin: 4px 0; }
+.tool-field > summary { cursor: pointer; font-size: 12px; color: var(--text-dim); user-select: none; }
+.tool-field > summary.invalid { color: var(--red); }
+.tool-edit {
+  display: block; width: 100%; min-height: 72px; max-height: 320px;
+  margin-top: 6px; padding: 8px; resize: vertical; overflow: auto;
+  font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  white-space: pre; word-break: normal; overflow-wrap: normal;
+}
+.tool-edit[readonly] { color: var(--text-dim); }
+.tool-error { color: var(--red); font-size: 12px; margin: 4px 0; overflow-wrap: anywhere; }
 .reasoning-line { color: var(--text-faint); font-style: italic; padding: 0 2px; white-space: pre-wrap; }
 .other-line { color: var(--text-faint); font-size: 11px; padding: 0 2px; }
 

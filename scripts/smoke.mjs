@@ -49,6 +49,73 @@ async function afterLayout() {
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
 }
 
+async function checkToolEditing() {
+  const select = key => `document.querySelector('.diff-cell.right .tool-block[data-part-id="prt_tool"] .tool-edit[data-field="${key}"]')`;
+  async function edit(key, value) {
+    await evaluate(`(() => {
+      const field = ${select(key)};
+      field.value = ${JSON.stringify(value)};
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await afterLayout();
+  }
+  assert.equal(await evaluate("[...document.querySelectorAll('.tool-block')].every(tool => !tool.open)"), true, 'tools start collapsed');
+  assert.equal(await evaluate("document.querySelectorAll('.tool-edit').length"), 0, 'collapsed tools load their contents lazily');
+  await evaluate("document.querySelector('.diff-cell.right .tool-block').open = true");
+  await afterLayout();
+  assert.equal(await evaluate("[...document.querySelectorAll('.diff-cell.right .tool-field')].every(field => !field.open)"), true, 'input and output start collapsed');
+  await evaluate("document.querySelectorAll('.diff-cell.right .tool-field').forEach(field => field.open = true)");
+  await afterLayout();
+  assert.ok(await evaluate(`${select('input')}.value.includes('\\n')`), 'JSON input is formatted');
+  assert.equal(await evaluate(`${select('output')}.value`), JSON.stringify({ content: '长工具输出\n'.repeat(300) }, null, 2));
+  assert.ok(await evaluate(`${select('input')}.clientHeight <= 320 && ${select('input')}.scrollHeight > ${select('input')}.clientHeight`), 'long input scrolls inside a bounded editor');
+  assert.equal(await evaluate('hasChanges()'), false, 'expanding and formatting do not change tool data');
+
+  const editedInput = { filePath: '/tmp/edited.json', nested: { count: 2 } };
+  await edit('input', JSON.stringify(editedInput, null, 2));
+  assert.equal(await evaluate('hasChanges()'), true, 'tool-only edits enable save');
+  assert.equal(await evaluate("document.querySelector('.diff-cell.right .tool-block').closest('.diff-row').classList.contains('modified')"), true, 'tool edits appear in the diff');
+  assert.equal(await evaluate("state.originalMessages[1].parts[2].state.input.filePath"), '/tmp/example.json', 'original tool is unchanged');
+  await edit('input', '{"filePath":');
+  assert.equal(await evaluate('toolErrors().length'), 1);
+  assert.equal(await evaluate('saveAs()'), null, 'invalid JSON blocks saving');
+  await assert.rejects(readFile(path.join(fixture.root, 'import.json')));
+  await evaluate("addReasoning(state.session.messages[1])");
+  await afterLayout();
+  assert.equal(await evaluate(`${select('input')}.value`), '{"filePath":', 'invalid draft survives rerender');
+  await evaluate("document.querySelector('.diff-cell.right .tool-block').open = false");
+  await afterLayout();
+  await evaluate("document.querySelector('.diff-cell.right .tool-block').open = true");
+  await afterLayout();
+  assert.equal(await evaluate(`${select('input')}.value`), '{"filePath":', 'draft survives collapse');
+  await edit('input', '[]');
+  assert.equal(await evaluate('toolErrors().length'), 1, 'tool input must remain an object');
+  await edit('input', JSON.stringify(editedInput, null, 2));
+  assert.equal(await evaluate('toolErrors().length'), 0);
+  await edit('output', '{"ok":true,"message":"edited"}');
+  assert.equal(await evaluate("typeof state.session.messages[1].parts.find(p => p.id === 'prt_tool').state.output"), 'string', 'JSON tool output remains a string');
+  await edit('output', '修改后的普通文本输出\n第二行');
+
+  await evaluate("document.querySelector('.diff-cell.left .tool-block').open = true");
+  await afterLayout();
+  await evaluate("document.querySelector('.diff-cell.left .tool-field').open = true");
+  await afterLayout();
+  assert.equal(await evaluate("document.querySelector('.diff-cell.left .tool-edit').readOnly"), true);
+
+  await evaluate("document.querySelector('.diff-cell.right .tool-block[data-part-id=\"prt_tool_error\"]').open = true");
+  await afterLayout();
+  await evaluate("document.querySelector('.diff-cell.right .tool-field[data-field=\"error\"]').open = true");
+  await afterLayout();
+  await evaluate(`(() => {
+    const field = document.querySelector('.diff-cell.right .tool-edit[data-field="error"]');
+    field.value = '修改后的错误输出';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    deletePart(state.session.messages[1], 0);
+  })()`);
+  await afterLayout();
+  assert.equal(await evaluate(`${select('output')}.value`), '修改后的普通文本输出\n第二行', 'valid edits and expansion survive rerender');
+}
+
 async function checkEditorScroll() {
   await evaluate(`(() => {
     window.scrollTest = {
@@ -127,6 +194,7 @@ try {
   await evaluate('document.querySelector(".session-item").click()');
   await until(() => evaluate('!!document.querySelector(".text-edit")'), 'editor');
   assert.equal(await evaluate('document.querySelectorAll(".diff-row").length'), 2);
+  await checkToolEditing();
   const screenshot = await send('Page.captureScreenshot', { format: 'png' });
   await mkdir(path.join(root, '.build'), { recursive: true });
   await writeFile(path.join(root, '.build', 'desktop-smoke.png'), Buffer.from(screenshot.data, 'base64'));
@@ -141,6 +209,12 @@ try {
   const { payload, cwd, tmp } = JSON.parse(await readFile(path.join(fixture.root, 'import.json'), 'utf8'));
   assert.equal(cwd, fixture.directory);
   assert.equal(payload.messages[1].parts[1].text, 'Electron 打包应用保存测试');
+  const tool = payload.messages[1].parts.find(part => part.type === 'tool' && part.tool === 'read');
+  assert.deepEqual(tool.state.input, { filePath: '/tmp/edited.json', nested: { count: 2 } });
+  assert.equal(tool.state.output, '修改后的普通文本输出\n第二行');
+  assert.deepEqual(tool.state.metadata, { preserved: true });
+  assert.equal(tool.callID, 'call_fixture');
+  assert.equal(payload.messages[1].parts.find(part => part.tool === 'bash').state.error, '修改后的错误输出');
   assert.notEqual(payload.info.id, 'ses_fixture');
   assert.equal(await evaluate('hasChanges()'), false);
   await assert.rejects(readFile(tmp));
@@ -157,7 +231,7 @@ try {
   await until(() => child.exitCode !== null, 'app exit', 10000);
   assert.equal(child.exitCode, 0);
   await assert.rejects(fetch(target.url));
-  console.log('PASS: packaged window, editor scroll retention (8 operations), fresh-view scroll reset, clone save, single instance, exit and backend cleanup.');
+  console.log('PASS: packaged window, collapsed tool input/output editing, JSON validation and draft retention, clone save with tool data, editor scroll retention (8 operations), fresh-view scroll reset, single instance, exit and backend cleanup.');
 } finally {
   socket?.close();
   if (child.exitCode === null) child.kill('SIGTERM');

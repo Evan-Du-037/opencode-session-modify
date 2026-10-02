@@ -75,6 +75,8 @@ test("failed exports remove their temporary directory", async () => {
 test("clone keeps the source intact, remaps IDs, uses its project directory and removes temporary files", async () => {
   const edited = structuredClone(fixture.session);
   edited.info.title = "已编辑";
+  edited.messages[1].parts[2].state.input.filePath = "/tmp/edited.json";
+  edited.messages[1].parts[2].state.output = "修改后的工具输出";
   const result = await fetch(backend.url + "/api/session/ses_fixture/clone", {
     method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(edited),
   });
@@ -85,6 +87,8 @@ test("clone keeps the source intact, remaps IDs, uses its project directory and 
   expect(cwd).toBe(fixture.directory);
   expect(payload.messages[1].info.parentID).toBe(payload.messages[0].info.id);
   expect(payload.messages[1].parts[0].metadata).toEqual({ other: true });
+  expect(payload.messages[1].parts[2].state).toEqual(edited.messages[1].parts[2].state);
+  expect(payload.messages[1].parts[2].callID).toBe("call_fixture");
   for (const m of payload.messages) for (const p of m.parts) {
     expect(p.sessionID).toBe(saved.id);
     expect(p.messageID).toBe(m.info.id);

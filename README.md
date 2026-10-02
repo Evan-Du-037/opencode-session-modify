@@ -2,6 +2,8 @@
 
 用于查看和编辑本机 OpenCode 会话的桌面工具。修改通过 `opencode import` 另存为新会话，原会话保持不变。
 
+工具调用默认折叠。点击工具摘要后，可分别展开输入、输出；左侧原始内容只读，右侧可编辑。JSON 输入会格式化显示并校验，长内容在编辑框内滚动；工具输出支持普通文本和 JSON 文本，失败调用也可修改错误输出。折叠或执行其他编辑操作时会保留草稿；存在格式错误时无法保存。
+
 ## macOS 应用
 
 双击 `dist/OpenCode Session Editor-darwin-arm64/OpenCode Session Editor.app` 即可运行，也可以将它拖到「应用程序」目录。应用内置 Bun，无需开启终端或浏览器；本机仍需安装 OpenCode。

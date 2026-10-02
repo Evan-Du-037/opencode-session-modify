@@ -31,6 +31,9 @@ let HOME_DIR = "";
 let listContainer = null;
 let scrollObserver = null;
 let searchTimer = null;
+// Keep tool drafts and disclosure state outside the exported session data.
+const toolDrafts = new WeakMap();
+const toolViews = new WeakMap();
 
 const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
@@ -550,7 +553,7 @@ async function openSession(id) {
 function hashMessage(msg) {
   const role = (msg.info && msg.info.role) || "?";
   const text = (msg.parts || []).map(p => {
-    if (p.type === "tool") return "\x01tool:" + (p.tool || "");
+    if (p.type === "tool") return "\x01tool:" + (p.tool || "") + JSON.stringify(p.state || {});
     if (p.type === "reasoning") return "\x01reasoning:" + (p.text || "");
     return p.text || "";
   }).join("\n");
@@ -578,7 +581,10 @@ function computeLCS(a, b, eq) {
 function diffMessages(original, current) {
   if (!original) original = [];
   if (!current) current = [];
-  const raw = computeLCS(original, current, (a, b) => hashMessage(a) === hashMessage(b));
+  // Tool outputs can be large: serialize each message once, not per LCS cell.
+  const originalHashes = new Map(original.map(msg => [msg, hashMessage(msg)]));
+  const currentHashes = new Map(current.map(msg => [msg, hashMessage(msg)]));
+  const raw = computeLCS(original, current, (a, b) => originalHashes.get(a) === currentHashes.get(b));
   const out = [];
   for (let i = 0; i < raw.length; i++) {
     if (raw[i].t === 1 && i + 1 < raw.length && raw[i + 1].t === 2) {
@@ -608,6 +614,7 @@ function diffTextLines(origText, currText) {
 const GUTTER_COLORS = { user: "#4a9eff", assistant: "#d4a04a" };
 
 function autoResize(ta) {
+  if (ta.classList.contains("tool-edit") && !ta.getClientRects().length) return;
   ta.style.height = "auto";
   ta.style.height = Math.max(ta.scrollHeight, 20) + "px";
 }
@@ -618,8 +625,123 @@ function toolSummary(p) {
   return "\u2699 " + (p.tool || "?") + " " + icon;
 }
 
+function toolErrors() {
+  return (state.session?.messages || []).flatMap(msg => (msg.parts || [])
+    .flatMap(part => [...(toolDrafts.get(part)?.values() || [])].filter(draft => draft.error)));
+}
+
+let minimapFrame = null;
+function refreshMinimap() {
+  cancelAnimationFrame(minimapFrame);
+  minimapFrame = requestAnimationFrame(() => {
+    const container = document.getElementById("diff-scroll");
+    const minimap = document.getElementById("diff-minimap");
+    if (container && minimap) buildMinimap(container, minimap);
+  });
+}
+
+function renderTool(part, msg, original, side) {
+  const data = part.state || {};
+  let views = toolViews.get(part);
+  if (!views) { views = {}; toolViews.set(part, views); }
+  const view = views[side] ||= { open: false, fields: {} };
+  const tool = el("details", { class: "tool-block" });
+  tool.dataset.partId = part.id || "";
+  tool.open = view.open;
+  tool.appendChild(el("summary", { class: "tool-line", text: toolSummary(part) }));
+  const body = el("div", { class: "tool-body" });
+  let populated = false;
+
+  function addField(key, label) {
+    const value = data[key];
+    const json = key === "input" || (value != null && typeof value !== "string");
+    const field = el("details", { class: "tool-field" });
+    field.dataset.field = key;
+    field.open = !!view.fields[key];
+    const summary = el("summary", { text: label + (json ? " · JSON" : " · 文本") });
+    field.appendChild(summary);
+    let area;
+    function populateField() {
+      if (area) return;
+      const draft = side === "right" ? toolDrafts.get(part)?.get(key) : null;
+      area = el("textarea", {
+        class: "tool-edit", "aria-label": label + (side === "left" ? "（原始，只读）" : "（修改）"),
+        spellcheck: "false",
+      });
+      area.dataset.field = key;
+      area.readOnly = side === "left";
+      let text = json ? JSON.stringify(value, null, 2) : (value ?? "");
+      // JSON returned as text remains a string in the saved tool result.
+      if (!json && typeof text === "string") {
+        try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
+      }
+      area.value = draft ? draft.text : (text ?? "{}");
+      const error = el("div", { class: "tool-error", role: "alert" });
+      function showError(message) {
+        area.classList.toggle("err", !!message);
+        area.setAttribute("aria-invalid", String(!!message));
+        error.textContent = message || "";
+        error.hidden = !message;
+        summary.classList.toggle("invalid", !!message);
+      }
+      showError(draft?.error);
+      if (side === "right") {
+        area.addEventListener("input", () => {
+          let drafts = toolDrafts.get(part);
+          if (!drafts) { drafts = new Map(); toolDrafts.set(part, drafts); }
+          const draft = { text: area.value, error: "" };
+          try {
+            const parsed = json ? JSON.parse(area.value) : area.value;
+            if (key === "input" && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))) {
+              throw new Error("工具输入必须是 JSON 对象");
+            }
+            data[key] = parsed;
+          } catch (e) {
+            draft.error = "格式错误：" + e.message;
+          }
+          drafts.set(key, draft);
+          showError(draft.error);
+          autoResize(area);
+          refreshRow(tool, original, msg);
+          refreshMinimap();
+        });
+      }
+      field.appendChild(area);
+      field.appendChild(error);
+    }
+    field.addEventListener("toggle", () => {
+      view.fields[key] = field.open;
+      if (field.open) { populateField(); autoResize(area); }
+      refreshMinimap();
+    });
+    if (field.open) populateField();
+    body.appendChild(field);
+  }
+
+  function populate() {
+    if (populated) return;
+    populated = true;
+    if (Object.hasOwn(data, "input")) addField("input", "工具输入");
+    if (Object.hasOwn(data, "output") || data.status === "completed") addField("output", "工具输出");
+    if (Object.hasOwn(data, "error")) addField("error", "工具错误（输出）");
+    if (!body.children.length) body.appendChild(el("div", { class: "other-line", text: "尚无工具输入或输出" }));
+  }
+  tool.addEventListener("toggle", () => {
+    view.open = tool.open;
+    if (tool.open) {
+      populate();
+      body.querySelectorAll("textarea").forEach(autoResize);
+    }
+    refreshMinimap();
+  });
+  if (tool.open) populate();
+  tool.appendChild(body);
+  return tool;
+}
+
 function hasChanges() {
   if (!state.session || !state.originalMessages) return false;
+  if (toolErrors().length) return true;
   const title = (state.session.info && state.session.info.title) || "";
   if (title !== state.originalTitle) return true;
   return JSON.stringify(state.session.messages || []) !== JSON.stringify(state.originalMessages);
@@ -790,7 +912,7 @@ function renderCellSegments(cell, myMsg, otherMsg, side) {
         cell.appendChild(ta);
       }
     } else if (p.type === "tool") {
-      cell.appendChild(el("div", { class: "tool-line", text: toolSummary(p) }));
+      cell.appendChild(renderTool(p, myMsg, otherMsg, side));
     } else if (p.type === "reasoning") {
       if (side === "right") {
         const wrap = el("div", { class: "reasoning-wrap" });
@@ -1066,6 +1188,27 @@ async function copyText(text) {
 
 async function saveAs() {
   if (!state.session) return null;
+  if (toolErrors().length) {
+    toast("工具内容存在格式错误，请修正后再保存", "err");
+    for (const msg of state.session.messages || []) for (const part of msg.parts || []) {
+      const invalid = [...(toolDrafts.get(part)?.entries() || [])].find(([, draft]) => draft.error);
+      if (!invalid) continue;
+      const tool = [...document.querySelectorAll(".diff-cell.right .tool-block")]
+        .find(node => node.dataset.partId === (part.id || ""));
+      if (tool) {
+        tool.open = true;
+        tool.dispatchEvent(new Event("toggle"));
+        const field = [...tool.querySelectorAll(".tool-field")].find(node => node.dataset.field === invalid[0]);
+        if (field) {
+          field.open = true;
+          field.dispatchEvent(new Event("toggle"));
+          field.querySelector("textarea")?.focus();
+        }
+      }
+      return null;
+    }
+    return null;
+  }
   if (!hasChanges()) return state.clonedId;
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");

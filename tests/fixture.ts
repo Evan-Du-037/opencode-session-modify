@@ -16,6 +16,13 @@ export async function createFixture() {
       { info: { id: "msg_assistant", sessionID: "ses_fixture", parentID: "msg_user", role: "assistant", time: { created: now } }, parts: [
         { id: "prt_reasoning", messageID: "msg_assistant", sessionID: "ses_fixture", type: "reasoning", text: "测试推理", time: { start: now, end: now }, metadata: { anthropic: { signature: "fixture" }, other: true } },
         { id: "prt_answer", messageID: "msg_assistant", sessionID: "ses_fixture", type: "text", text: "测试回答" },
+        { id: "prt_tool", messageID: "msg_assistant", sessionID: "ses_fixture", type: "tool", tool: "read", callID: "call_fixture", state: {
+          status: "completed", input: { filePath: "/tmp/example.json", options: { lines: Array.from({ length: 80 }, (_, i) => i) } },
+          output: JSON.stringify({ content: "长工具输出\n".repeat(300) }), title: "example.json", metadata: { preserved: true }, time: { start: now, end: now },
+        } },
+        { id: "prt_tool_error", messageID: "msg_assistant", sessionID: "ses_fixture", type: "tool", tool: "bash", callID: "call_error", state: {
+          status: "error", input: { command: "false" }, error: "command failed", time: { start: now, end: now },
+        } },
       ] },
     ],
   };
