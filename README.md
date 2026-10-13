@@ -1,25 +1,43 @@
 # OpenCode Session Editor
 
-用于查看和编辑本机 OpenCode 会话的桌面工具。修改通过 `opencode import` 另存为新会话，原会话保持不变。
+English | [简体中文](README.zh-CN.md)
 
-工具调用默认折叠。点击工具摘要后，可分别展开输入、输出；左侧原始内容只读，右侧可编辑。JSON 输入会格式化显示并校验，长内容在编辑框内滚动；工具输出支持普通文本和 JSON 文本，失败调用也可修改错误输出。折叠或执行其他编辑操作时会保留草稿；存在格式错误时无法保存。
+A desktop tool for browsing and editing local OpenCode sessions. It automatically detects OpenCode v1 or v2 and saves edits as a **new session** through the official import command, leaving the original session unchanged. Verified with OpenCode **v2.0.26**.
 
-## macOS 应用
+## Editing sessions
 
-双击 `dist/OpenCode Session Editor-darwin-arm64/OpenCode Session Editor.app` 即可运行，也可以将它拖到「应用程序」目录。应用内置 Bun，无需开启终端或浏览器；本机仍需安装 OpenCode。
+Tool calls are collapsed by default. Expand a tool call, then expand its input or output separately. The left pane shows the read-only original; the right pane is editable. JSON input is formatted and validated, and long content scrolls inside the editor. Drafts survive collapsing sections and other editing operations. Invalid JSON blocks saving.
 
-- 重复打开应用会唤起已有窗口。
-- 关闭最后一个窗口或按 `⌘Q` 会结束应用及其后台服务。
-- 未保存的编辑在关闭或刷新窗口时会提示确认。
-- 支持原生目录选择、剪贴板和标准编辑快捷键。
-- 自动查找 PATH、`~/.opencode/bin`、`~/.bun/bin`、`~/.local/bin` 和 Homebrew 中的命令。
-- 非标准安装路径可通过 `OCEDIT_OPENCODE` 指定 OpenCode 可执行文件。
+- **OpenCode v1:** tool output can be plain text or JSON encoded as text. Failed tool calls also have editable error output.
+- **OpenCode v2:** tool output is edited as a `content` JSON array, with text in each text item's `text` field. Errors use structured JSON.
+- Attachments, model changes, system messages, and compaction records are retained in the saved copy. Compaction `summary` and `recent` text can be edited; other timeline event details are read-only.
 
-当前产物面向本机构建架构，使用本地 ad-hoc 签名，未做 Developer ID 签名和公证。
+OpenCode v2's official export includes only settled messages. Wait for an in-progress response to finish, then reopen the session to include it. Legacy v1 sessions must first be migrated by OpenCode before they appear in the v2 session list.
 
-## 开发与构建
+## macOS app
 
-需要 Node.js、npm、Bun 和 OpenCode。在 macOS 上执行：
+For the versioned 1.1.0 build on Apple Silicon, open:
+
+```text
+dist/1.1.0/OpenCode Session Editor-darwin-arm64/OpenCode Session Editor.app
+```
+
+You can also drag the app into Applications. The app bundles Bun and runs in its own window without a terminal or browser. OpenCode must still be installed locally.
+
+- Opening the app again brings the existing window forward.
+- Closing the last window or pressing `⌘Q` stops the app and its backend.
+- Closing or refreshing a window with unsaved changes prompts for confirmation.
+- Native directory selection, clipboard access, and standard editing shortcuts are supported.
+- Executables are discovered through `PATH`, `~/.opencode/bin`, `~/.bun/bin`, `~/.local/bin`, and Homebrew locations.
+- Set `OCEDIT_OPENCODE` to use an OpenCode executable installed in a nonstandard location.
+
+Builds target the host architecture and use a local ad-hoc signature. They are not Developer ID signed or notarized.
+
+A desktop alias continues to point to the app it was created for. If you build a new version in a separate directory, recreate the alias for that version.
+
+## Development and building
+
+Requires Node.js, npm, Bun, and OpenCode. On macOS:
 
 ```sh
 npm ci
@@ -27,14 +45,32 @@ npm start
 npm test
 npm run build
 npm run test:app
+
+# Run isolated integration tests with the installed OpenCode v2 CLI.
+OCEDIT_REAL_OPENCODE="$HOME/.opencode/bin/opencode" npm test
+OCEDIT_TEST_V2=1 npm run test:app
 ```
 
-`npm run build` 将当前机器的 Bun 运行时和后端代码放进应用，输出到 `dist/`。构建产物不依赖本项目的源代码目录。
+`npm run build` bundles the host's Bun runtime and the backend into the app under `dist/`. The resulting app does not depend on this source checkout.
 
-Electron 主进程位于 `electron/main.cjs`；通过 `electron/runtime.cjs` 启动独立 Bun 后端，并在随机本地端口等待就绪。桌面请求带有每次启动随机生成的令牌。前端使用隔离且启用沙箱的渲染进程，通过有限的 preload 接口访问目录选择和剪贴板。
+To keep an older build, choose a separate output directory and pass the resulting app path to the smoke tests:
 
-测试使用临时 SQLite 数据库和模拟 OpenCode CLI，覆盖启动、访问校验、读取、克隆、临时文件清理和退出行为，不写入真实会话。
+```sh
+OCEDIT_BUILD_OUT=dist/1.1.0 npm run build
+npm run test:app -- "dist/1.1.0/OpenCode Session Editor-darwin-arm64/OpenCode Session Editor.app"
+OCEDIT_TEST_V2=1 npm run test:app -- "dist/1.1.0/OpenCode Session Editor-darwin-arm64/OpenCode Session Editor.app"
+```
 
-## 原有浏览器方式
+These paths assume Apple Silicon; the build script uses the current machine's architecture. The v2 desktop test defaults to `~/.opencode/bin/opencode`; set `OCEDIT_REAL_OPENCODE` if the executable is elsewhere.
 
-仍可运行 `bun run src/server.ts`，或使用 `./install.sh` 安装的 `ocedit` 命令。`shortcut.sh` 创建的是原有终端启动快捷方式；使用桌面版时直接打开 `.app`。
+## Implementation and tests
+
+The Electron main process is in `electron/main.cjs`. It starts an independent Bun backend through `electron/runtime.cjs` and waits for it to become ready on a random loopback port. Desktop requests use a token generated for each launch. The renderer is sandboxed and context-isolated, with a limited preload interface for directory selection and clipboard access.
+
+For v2, the backend locates the database with `opencode debug paths`, queries `session_v2` and `session_message` in read-only mode, and uses `opencode session export` / `opencode session import` to transfer sessions. The v1 path uses the legacy schema and commands.
+
+The v1 regression tests use a temporary SQLite database and a mock CLI. The v2 integration tests use the real CLI with isolated XDG data/configuration directories and temporary servers. They cover listing, searching, text and tool edits, cloning, and re-exporting, while checking that the source session remains unchanged. Tests do not write to your real sessions.
+
+## Browser mode
+
+You can still run `bun run src/server.ts`, or use the `ocedit` command installed by `./install.sh`. The `shortcut.sh` script creates the legacy terminal launcher; open the `.app` directly for desktop mode.

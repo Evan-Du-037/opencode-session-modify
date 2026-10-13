@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const appDir = process.argv[2] || path.join(root, 'dist', `OpenCode Session Editor-darwin-${process.arch}`, 'OpenCode Session Editor.app');
 const binary = path.join(appDir, 'Contents', 'MacOS', 'OpenCode Session Editor');
-const fixture = JSON.parse(execFileSync('bun', ['run', path.join(root, 'tests', 'fixture.ts')], { encoding: 'utf8' }));
+const v2 = process.env.OCEDIT_TEST_V2 === '1';
+const fixture = JSON.parse(execFileSync('bun', ['run', path.join(root, 'tests', v2 ? 'v2-fixture.ts' : 'fixture.ts')], { encoding: 'utf8' }));
 const appEnv = { ...process.env, OCEDIT_OPENCODE: fixture.opencode };
 delete appEnv.ELECTRON_RUN_AS_NODE;
 const child = spawn(binary, ['--remote-debugging-port=0', `--user-data-dir=${path.join(fixture.root, 'profile')}`], {
@@ -116,6 +117,34 @@ async function checkToolEditing() {
   assert.equal(await evaluate(`${select('output')}.value`), '修改后的普通文本输出\n第二行', 'valid edits and expansion survive rerender');
 }
 
+async function checkV2Editing() {
+  assert.equal(await evaluate("[...document.querySelectorAll('.tool-block')].every(tool => !tool.open)"), true);
+  await evaluate("document.querySelectorAll('.diff-cell.right .tool-block').forEach(tool => tool.open = true)");
+  await afterLayout();
+  await evaluate("document.querySelectorAll('.diff-cell.right .tool-field').forEach(field => field.open = true)");
+  await afterLayout();
+  async function edit(key, value) {
+    await evaluate(`(() => {
+      const field = document.querySelector('.diff-cell.right .tool-edit[data-field="${key}"]');
+      field.value = ${JSON.stringify(value)};
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await afterLayout();
+  }
+  assert.equal(await evaluate('hasChanges()'), false);
+  await edit('input', '{');
+  assert.equal(await evaluate('toolErrors().length'), 1);
+  assert.equal(await evaluate('saveAs()'), null);
+  await edit('input', JSON.stringify({ path: '/tmp/v2-edited.json' }));
+  await edit('content', '[]');
+  assert.equal(await evaluate('toolErrors().length'), 1);
+  await edit('content', JSON.stringify([{ type: 'text', text: 'v2 修改后的工具输出' }]));
+  await edit('error', JSON.stringify({ type: 'unknown', message: 'v2 修改后的错误输出' }));
+  await evaluate("deletePart(state.session.messages[1], 0); addMessageAt(state.session.messages.length); toggleRole(state.session.messages.at(-1)); state.session.messages.at(-1).parts[0].text = 'v2 新增回答'; render({ preserveEditorScroll: true })");
+  await afterLayout();
+  assert.equal(await evaluate('toolErrors().length'), 0);
+}
+
 async function checkEditorScroll() {
   await evaluate(`(() => {
     window.scrollTest = {
@@ -194,7 +223,8 @@ try {
   await evaluate('document.querySelector(".session-item").click()');
   await until(() => evaluate('!!document.querySelector(".text-edit")'), 'editor');
   assert.equal(await evaluate('document.querySelectorAll(".diff-row").length'), 2);
-  await checkToolEditing();
+  if (v2) await checkV2Editing();
+  else await checkToolEditing();
   const screenshot = await send('Page.captureScreenshot', { format: 'png' });
   await mkdir(path.join(root, '.build'), { recursive: true });
   await writeFile(path.join(root, '.build', 'desktop-smoke.png'), Buffer.from(screenshot.data, 'base64'));
@@ -208,6 +238,22 @@ try {
   await until(() => evaluate('document.getElementById("toast").textContent.includes("已保存为新会话")'), 'save clone');
   const { payload, cwd, tmp } = JSON.parse(await readFile(path.join(fixture.root, 'import.json'), 'utf8'));
   assert.equal(cwd, fixture.directory);
+  if (v2) {
+    const content = payload.messages[1].content;
+    assert.equal(content.find(p => p.type === 'text').text, 'Electron 打包应用保存测试');
+    const tool = content.find(p => p.type === 'tool' && p.name === 'read');
+    assert.deepEqual(tool.state.input, { path: '/tmp/v2-edited.json' });
+    assert.equal(tool.state.content[0].text, 'v2 修改后的工具输出');
+    assert.equal(tool.state.metadata.preserved, true);
+    assert.equal(tool.id, 'call_fixture');
+    assert.equal(content.find(p => p.name === 'bash').state.error.message, 'v2 修改后的错误输出');
+    assert.ok(!content.some(p => p.type === 'reasoning'));
+    assert.equal(payload.messages.length, 3);
+    assert.equal(payload.messages[2].type, 'assistant');
+    assert.equal(payload.messages[2].content[0].text, 'v2 新增回答');
+    const native = JSON.parse(execFileSync(fixture.opencode, ['session', 'export', payload.info.id], { cwd: fixture.directory, encoding: 'utf8' }));
+    assert.deepEqual(native.messages, payload.messages);
+  } else {
   assert.equal(payload.messages[1].parts[1].text, 'Electron 打包应用保存测试');
   const tool = payload.messages[1].parts.find(part => part.type === 'tool' && part.tool === 'read');
   assert.deepEqual(tool.state.input, { filePath: '/tmp/edited.json', nested: { count: 2 } });
@@ -215,10 +261,11 @@ try {
   assert.deepEqual(tool.state.metadata, { preserved: true });
   assert.equal(tool.callID, 'call_fixture');
   assert.equal(payload.messages[1].parts.find(part => part.tool === 'bash').state.error, '修改后的错误输出');
+  }
   assert.notEqual(payload.info.id, 'ses_fixture');
   assert.equal(await evaluate('hasChanges()'), false);
   await assert.rejects(readFile(tmp));
-  await checkEditorScroll();
+  if (!v2) await checkEditorScroll();
   assert.deepEqual(errors, []);
 
   const second = spawn(binary, [`--user-data-dir=${path.join(fixture.root, 'profile')}`], { env: appEnv, stdio: 'ignore' });
@@ -231,7 +278,9 @@ try {
   await until(() => child.exitCode !== null, 'app exit', 10000);
   assert.equal(child.exitCode, 0);
   await assert.rejects(fetch(target.url));
-  console.log('PASS: packaged window, collapsed tool input/output editing, JSON validation and draft retention, clone save with tool data, editor scroll retention (8 operations), fresh-view scroll reset, single instance, exit and backend cleanup.');
+  console.log(v2
+    ? 'PASS V2: packaged window, real CLI, collapsed tool editing, JSON validation, reasoning deletion, assistant insertion, clone save and native re-export, single instance, exit and backend cleanup.'
+    : 'PASS V1: packaged window, collapsed tool editing, JSON validation and draft retention, clone save, scroll retention (8 operations), fresh-view reset, single instance, exit and backend cleanup.');
 } finally {
   socket?.close();
   if (child.exitCode === null) child.kill('SIGTERM');

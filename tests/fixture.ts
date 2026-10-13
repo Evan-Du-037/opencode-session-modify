@@ -41,7 +41,8 @@ import { Database } from 'bun:sqlite';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const root = ${JSON.stringify(root)};
 const args = process.argv.slice(2);
-if (args[0] === 'db' && args[1] === 'path') console.log(root + '/opencode.db');
+if (args[0] === '--version') console.log('1.18.34');
+else if (args[0] === 'db' && args[1] === 'path') console.log(root + '/opencode.db');
 else if (args[0] === 'export') {
   const data = JSON.parse(readFileSync(root + '/session.json', 'utf8'));
   if (args[1] !== data.info.id) process.exit(1);

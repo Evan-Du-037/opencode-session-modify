@@ -1,4 +1,5 @@
 import { sessionId, messageId, partId } from "./ids";
+import { fromV2, toV2 } from "./v2";
 import { mkdtemp, open, readFile, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,11 +27,26 @@ function parseArgs(): { sessionId?: string } {
 
 let server: ReturnType<typeof Bun.serve> | null = null;
 
-function dbPath(): string {
-  const r = Bun.spawnSync({ cmd: [OPENCODE, "db", "path"] });
-  const path = r.stdout.toString().trim();
+let detected: { v2: boolean; path: string } | undefined;
+function runtime(): { v2: boolean; path: string } {
+  if (detected) return detected;
+  const version = Bun.spawnSync({ cmd: [OPENCODE, "--version"], stdin: "ignore" });
+  const match = version.stdout.toString().match(/(?:^|\s)v?(\d+)\./);
+  if (version.exitCode !== 0 || !match) throw new Error(`无法检测 OpenCode 版本：${version.stderr.toString().slice(0, 500)}`);
+  const major = Number(match[1]);
+  if (major !== 1 && major !== 2) throw new Error(`暂不支持 OpenCode ${major}`);
+  const v2 = major === 2;
+  const r = Bun.spawnSync({ cmd: [OPENCODE, ...(v2 ? ["debug", "paths"] : ["db", "path"])], stdin: "ignore" });
+  const output = r.stdout.toString().replace(/\x1b\[[0-9;]*m/g, "");
+  const path = v2 ? output.match(/^db\s+(.+)$/m)?.[1]?.trim() : output.trim();
   if (r.exitCode !== 0 || !path) throw new Error(`无法读取 OpenCode 数据库路径：${r.stderr.toString().slice(0, 500)}`);
-  return path;
+  return detected = { v2, path };
+}
+
+function dbPath(): string { return runtime().path; }
+function sessionTable(): string { return runtime().v2 ? "session_v2" : "session"; }
+function transferCommand(command: string): string[] {
+  return [OPENCODE, ...(runtime().v2 ? ["session", command] : [command])];
 }
 
 function json(body: unknown, status = 200): Response {
@@ -57,10 +73,17 @@ async function listSessions(req: Request): Promise<Response> {
     const path = dbPath();
     const db = await sqlite(path);
 
+    const v2 = runtime().v2;
+    const table = sessionTable();
+    const messages = v2 ? "session_message" : "part";
+    const order = v2 ? "seq" : "time_created";
+    const textExpr = (alias: string) => v2
+      ? `COALESCE(json_extract(${alias}.data, '$.text'), (SELECT json_extract(value, '$.text') FROM json_each(${alias}.data, '$.content') WHERE json_extract(value, '$.type') = 'text' LIMIT 1))`
+      : `json_extract(${alias}.data, '$.text')`;
     const conditions: string[] = [];
     const whereParams: string[] = [];
     if (q) {
-      conditions.push(`(s.title LIKE ? OR EXISTS (SELECT 1 FROM part p WHERE p.session_id = s.id AND p.data LIKE ?))`);
+      conditions.push(`(s.title LIKE ? OR EXISTS (SELECT 1 FROM ${messages} p WHERE p.session_id = s.id AND p.data LIKE ?))`);
       whereParams.push(`%${q}%`, `%${q}%`);
     }
     if (dir) {
@@ -72,29 +95,17 @@ async function listSessions(req: Request): Promise<Response> {
     }
     const whereSql = conditions.length ? " WHERE " + conditions.join(" AND ") : "";
 
-    const countRow = db.prepare(`SELECT COUNT(*) as cnt FROM session s${whereSql}`).get(...whereParams) as Record<string, unknown>;
+    const countRow = db.prepare(`SELECT COUNT(*) as cnt FROM ${table} s${whereSql}`).get(...whereParams) as Record<string, unknown>;
     const total = (countRow?.cnt as number) || 0;
 
-    const snippetExpr = q
-      ? `COALESCE(
-          (SELECT substr(json_extract(p2.data, '$.text'), 1, 300) FROM part p2
-           WHERE p2.session_id = s.id AND json_extract(p2.data, '$.type') = 'text'
-             AND json_extract(p2.data, '$.text') LIKE ?
-           ORDER BY p2.time_created LIMIT 1),
-          (SELECT substr(json_extract(p3.data, '$.text'), 1, 300) FROM part p3
-           WHERE p3.session_id = s.id AND json_extract(p3.data, '$.type') = 'text'
-           ORDER BY p3.time_created LIMIT 1),
-          '')`
-      : `COALESCE(
-          (SELECT substr(json_extract(p2.data, '$.text'), 1, 300) FROM part p2
-           WHERE p2.session_id = s.id AND json_extract(p2.data, '$.type') = 'text'
-           ORDER BY p2.time_created LIMIT 1),
-          '')`;
+    const snippetExpr = `COALESCE(
+      ${q ? `(SELECT substr(${textExpr("p2")}, 1, 300) FROM ${messages} p2 WHERE p2.session_id = s.id AND ${textExpr("p2")} LIKE ? ORDER BY p2.${order} LIMIT 1),` : ""}
+      (SELECT substr(${textExpr("p3")}, 1, 300) FROM ${messages} p3 WHERE p3.session_id = s.id AND ${textExpr("p3")} IS NOT NULL ORDER BY p3.${order} LIMIT 1), '')`;
     const snippetParams = q ? [`%${q}%`] : [];
 
     const dataSql = `SELECT s.id, s.title, s.time_created, s.time_updated, s.directory, s.model, s.agent, s.parent_id,
       ${snippetExpr} as snippet
-      FROM session s${whereSql}
+      FROM ${table} s${whereSql}
       ORDER BY s.time_updated DESC LIMIT ${limit} OFFSET ${offset}`;
 
     const rows = db.prepare(dataSql).all(...snippetParams, ...whereParams);
@@ -123,7 +134,7 @@ async function listDirs(): Promise<Response> {
     const path = dbPath();
     const db = await sqlite(path);
     const rows = db.prepare(
-      "SELECT DISTINCT directory FROM session ORDER BY directory;",
+      `SELECT DISTINCT directory FROM ${sessionTable()} ORDER BY directory;`,
     ).all() as Record<string, unknown>[];
     return json({ home: process.env.HOME || "", dirs: rows.map((r) => r.directory) });
   } catch (e) {
@@ -141,7 +152,7 @@ async function getSession(id: string): Promise<Response> {
     try {
       // OpenCode exits before large asynchronous pipe writes finish. A regular
       // file descriptor makes stdout writes synchronous and preserves all JSON.
-      r = Bun.spawnSync({ cmd: [OPENCODE, "export", id], stdout: output.fd, stderr: "pipe", stdin: "ignore" });
+      r = Bun.spawnSync({ cmd: [...transferCommand("export"), id], stdout: output.fd, stderr: "pipe", stdin: "ignore" });
     } finally {
       await output.close();
     }
@@ -158,7 +169,7 @@ async function getSession(id: string): Promise<Response> {
     } catch {
       return json({ error: "export produced invalid JSON" }, 500);
     }
-    return json(data);
+    return json(runtime().v2 ? fromV2(data) : data);
   } catch (e) {
     return json({ error: String(e) }, 500);
   } finally {
@@ -208,7 +219,19 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
     if (!data || typeof data !== "object" || !data.info || !Array.isArray(data.messages)) {
       return json({ error: "body must be { info, messages }" }, 400);
     }
-    rewriteClone(data);
+    const v2 = runtime().v2;
+    if (v2) {
+      if (data.info._format !== 2) return json({ error: "请重新打开 v2 会话后再保存" }, 400);
+      data = toV2(data);
+      data.info.id = sessionId(0);
+      for (const message of data.messages) message.id = messageId(0);
+      // Export materializes fork history. The clone is independent of the
+      // source's parent, fork boundary and undo state.
+      delete data.info.parentID;
+      delete data.info.fork;
+      delete data.info.revert;
+      delete data.info.time.archived;
+    } else rewriteClone(data);
 
     for (const msg of data.messages ?? []) {
       for (const part of msg.parts ?? []) {
@@ -221,23 +244,25 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
     const newId = data.info.id;
 
     tmp = join(tmpdir(), `oc-import-${crypto.randomUUID()}.json`);
-    await Bun.write(tmp, JSON.stringify(data));
+    await Bun.write(tmp, JSON.stringify(data), { mode: 0o600 });
 
     let cwd: string | undefined;
     try {
       const db = await sqlite(dbPath());
-      const row = db.prepare("SELECT directory FROM session WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      const row = db.prepare(`SELECT directory FROM ${sessionTable()} WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
       const dir = row?.directory;
       if (typeof dir === "string" && dir.length > 0) cwd = dir;
-    } catch {}
+    } catch (e) { throw new Error(`无法定位原会话目录：${e}`); }
+    if (!cwd) return json({ error: "原会话不存在，无法确定保存目录" }, 404);
 
     const r = Bun.spawnSync({
-      cmd: [OPENCODE, "import", tmp],
+      cmd: [...transferCommand("import"), tmp, ...(v2 ? ["--directory", cwd] : [])],
       cwd,
       stdout: "pipe",
       stderr: "pipe",
+      stdin: "ignore",
     });
-    if (r.exitCode !== 0) {
+    if (r.exitCode !== 0 || (v2 && !r.stdout.toString().includes(`Imported session: ${newId}`))) {
       const err = (r.stderr?.toString() ?? "") + (r.stdout?.toString() ?? "");
       return json({ error: `import failed: ${err.slice(0, 500)}` }, 500);
     }

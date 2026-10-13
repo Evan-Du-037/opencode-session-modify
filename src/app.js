@@ -654,7 +654,7 @@ function renderTool(part, msg, original, side) {
 
   function addField(key, label) {
     const value = data[key];
-    const json = key === "input" || (value != null && typeof value !== "string");
+    const json = (key === "input" && data.status !== "streaming") || (value != null && typeof value !== "string");
     const field = el("details", { class: "tool-field" });
     field.dataset.field = key;
     field.open = !!view.fields[key];
@@ -692,8 +692,12 @@ function renderTool(part, msg, original, side) {
           const draft = { text: area.value, error: "" };
           try {
             const parsed = json ? JSON.parse(area.value) : area.value;
-            if (key === "input" && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))) {
+            if (key === "input" && data.status !== "streaming" && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))) {
               throw new Error("工具输入必须是 JSON 对象");
+            }
+            if (key === "content" && (!Array.isArray(parsed) || !parsed.length || parsed.some(item =>
+              !item || (item.type === "text" ? typeof item.text !== "string" : item.type !== "file" || typeof item.uri !== "string")))) {
+              throw new Error("工具输出须为非空的 text/file 内容数组");
             }
             data[key] = parsed;
           } catch (e) {
@@ -722,7 +726,8 @@ function renderTool(part, msg, original, side) {
     if (populated) return;
     populated = true;
     if (Object.hasOwn(data, "input")) addField("input", "工具输入");
-    if (Object.hasOwn(data, "output") || data.status === "completed") addField("output", "工具输出");
+    if (Object.hasOwn(data, "content")) addField("content", "工具输出");
+    if (Object.hasOwn(data, "output") || (data.status === "completed" && !Object.hasOwn(data, "content"))) addField("output", "工具输出");
     if (Object.hasOwn(data, "error")) addField("error", "工具错误（输出）");
     if (!body.children.length) body.appendChild(el("div", { class: "other-line", text: "尚无工具输入或输出" }));
   }
@@ -853,7 +858,7 @@ function renderDiffRow(entry) {
   row.dataset.current = String(!!current);
 
   const gutter = el("div", { class: "diff-gutter", style: { background: gutterColor } });
-  if (current) {
+  if (current && ["user", "assistant"].includes(role)) {
     gutter.title = role + " \u2014 \u70b9\u51fb\u5207\u6362";
     gutter.style.cursor = "pointer";
     gutter.addEventListener("click", () => toggleRole(current));
@@ -883,6 +888,11 @@ function renderDiffRow(entry) {
 }
 
 function renderCellSegments(cell, myMsg, otherMsg, side) {
+  const native = myMsg.info?._v2;
+  if (native && !["user", "assistant"].includes(native.type)) {
+    cell.appendChild(el("div", { class: "other-line", text: "[" + native.type + "]" }));
+  }
+  if (native?.files?.length) cell.appendChild(el("div", { class: "other-line", text: `附件：${native.files.length} 个（保存时保留）` }));
   const myParts = myMsg.parts || [];
   const otherParts = otherMsg ? (otherMsg.parts || []) : [];
   const otherMap = new Map();
@@ -892,7 +902,12 @@ function renderCellSegments(cell, myMsg, otherMsg, side) {
     const p = myParts[i];
     if (p.type === "step-start" || p.type === "step-finish") continue;
     const op = p.id ? otherMap.get(p.id) : otherParts[i];
-    if (p.type === "text" || !p.type) {
+    if (p.type === "event") {
+      const detail = el("details", { class: "tool-block" });
+      detail.appendChild(el("summary", { text: "事件详情（只读，保存时保留）" }));
+      detail.appendChild(el("pre", { class: "other-line", text: p.text }));
+      cell.appendChild(detail);
+    } else if (p.type === "text" || !p.type) {
       const myText = p.text || "";
       const otherText = op ? (op.text || "") : "";
       if (side === "left") {
@@ -935,7 +950,7 @@ function renderCellSegments(cell, myMsg, otherMsg, side) {
     }
   }
 
-  if (side === "right") {
+  if (side === "right" && (state.session.info._format !== 2 || myMsg.info.role === "assistant")) {
     cell.appendChild(el("button", {
       class: "add-reasoning-btn",
       title: "添加推理部分",
@@ -1037,6 +1052,14 @@ function deleteMessage(msg) {
 
 function _tmplInfo(role) {
   const msgs = state.session.messages || [];
+  if (state.session.info._format === 2) {
+    const now = Date.now();
+    const source = msgs.findLast(m => m.info?.role === role)?.info?._v2;
+    return {
+      id: "msg_" + ulid(), role, time: { created: now, ...(role === "assistant" ? { completed: now } : {}) },
+      ...(role === "assistant" ? { _v2: { type: role, agent: source?.agent || state.session.info.agent || "build", model: source?.model || state.session.info.model } } : {}),
+    };
+  }
   const existing = msgs.findLast(m => m.info?.role === role);
   if (existing) return { ...existing.info, id: "msg_" + ulid() };
   const now = Date.now();
@@ -1072,7 +1095,13 @@ function addMessageAt(idx) {
 
 function toggleRole(msg) {
   const oldRole = msg.info?.role || "user";
+  if (!["user", "assistant"].includes(oldRole)) return;
   const newRole = oldRole === "user" ? "assistant" : "user";
+  if (state.session.info._format === 2 && ((newRole === "user" && msg.parts.some(p => p.type !== "text")) ||
+      (newRole === "assistant" && ["files", "agents", "skills"].some(key => msg.info._v2?.[key]?.length)))) {
+    toast("此消息含工具、推理或附件，无法直接切换角色", "err");
+    return;
+  }
   const tmpl = _tmplInfo(newRole);
   msg.info = { ...tmpl, id: msg.info?.id };
   render({ preserveEditorScroll: true });

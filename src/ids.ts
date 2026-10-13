@@ -22,10 +22,10 @@ function randomBase32(len: number): string {
   return s
 }
 
-function ulid(id: number): string {
-  const idStr = String(id)
-  const padLen = Math.max(0, 16 - idStr.length)
-  return ulidTime(Date.now()) + '0'.repeat(padLen) + idStr
+let lastTime = 0;
+function ulid(_id: number): string {
+  lastTime = Math.max(Date.now(), lastTime + 1);
+  return ulidTime(lastTime) + randomBase32(16)
 }
 
 export function sessionId(id: number): string {
