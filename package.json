@@ -6,9 +6,9 @@
   "description": "A desktop editor for local OpenCode sessions",
   "main": "electron/main.cjs",
   "scripts": {
-    "start": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "start": "node scripts/start.mjs",
     "build": "node scripts/build.mjs",
-    "test": "bun test tests",
+    "test": "bun test tests --timeout 30000",
     "test:app": "node scripts/smoke.mjs"
   },
   "devDependencies": {

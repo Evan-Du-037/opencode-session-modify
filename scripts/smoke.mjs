@@ -6,14 +6,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const appDir = process.argv[2] || path.join(root, 'dist', `OpenCode Session Editor-darwin-${process.arch}`, 'OpenCode Session Editor.app');
-const binary = path.join(appDir, 'Contents', 'MacOS', 'OpenCode Session Editor');
+const windows = process.platform === 'win32';
+const appDir = process.argv[2] || path.join(root, 'dist', `OpenCode Session Editor-${process.platform}-${process.arch}`, ...(windows ? [] : ['OpenCode Session Editor.app']));
+const binary = windows ? path.join(appDir, 'OpenCode Session Editor.exe') : path.join(appDir, 'Contents', 'MacOS', 'OpenCode Session Editor');
 const v2 = process.env.OCEDIT_TEST_V2 === '1';
-const fixture = JSON.parse(execFileSync('bun', ['run', path.join(root, 'tests', v2 ? 'v2-fixture.ts' : 'fixture.ts')], { encoding: 'utf8' }));
+const fixture = JSON.parse(execFileSync('bun', ['run', path.join(root, 'tests', v2 ? 'v2-fixture.ts' : 'fixture.ts')], { encoding: 'utf8', windowsHide: true }));
 const appEnv = { ...process.env, OCEDIT_OPENCODE: fixture.opencode };
 delete appEnv.ELECTRON_RUN_AS_NODE;
 const child = spawn(binary, ['--remote-debugging-port=0', `--user-data-dir=${path.join(fixture.root, 'profile')}`], {
-  env: appEnv, stdio: ['ignore', 'pipe', 'pipe'],
+  env: appEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
 });
 let diagnostics = '';
 child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-12000); });
@@ -23,7 +24,7 @@ let nextId = 0;
 const pending = new Map();
 const errors = [];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check, description, timeout = 20000) {
+async function until(check, description, timeout = 60000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const value = await check();

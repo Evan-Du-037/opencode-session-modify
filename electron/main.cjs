@@ -45,14 +45,14 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
-    backend.stop().finally(() => { cleanedUp = true; app.quit(); });
+    backend.stop().catch(error => console.error('Backend shutdown failed:', error)).finally(() => { cleanedUp = true; app.quit(); });
   });
 
   app.whenReady().then(async () => {
     const env = runtimeEnv();
     const backendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.join(__dirname, '..');
     const bun = app.isPackaged
-      ? path.join(backendDir, 'bun')
+      ? path.join(backendDir, process.platform === 'win32' ? 'bun.exe' : 'bun')
       : findExecutable('bun', env, env.OCEDIT_BUN);
     const opencode = findExecutable('opencode', env, env.OCEDIT_OPENCODE);
     const token = randomBytes(32).toString('hex');
@@ -69,7 +69,9 @@ if (!app.requestSingleInstanceLock()) {
     windowSession.setPermissionCheckHandler(() => false);
 
     Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
+      ...(process.platform === 'darwin'
+        ? [{ role: 'appMenu' }]
+        : [{ label: '文件', submenu: [{ role: 'close' }, { role: 'quit' }] }]),
       { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
       { label: '显示', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
       { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }] },

@@ -32,9 +32,9 @@ test("desktop backend binds loopback, chooses a port and authenticates requests"
 });
 
 test("Finder environment can discover OpenCode and explicit paths with spaces", () => {
-  const env = runtimeEnv({ PATH: "/usr/bin:/bin" }, "/example/home");
-  expect(env.PATH).toContain("/example/home/.opencode/bin");
-  expect(env.PATH).toContain("/opt/homebrew/bin");
+  const env = runtimeEnv({ PATH: process.env.PATH }, fixture.root);
+  expect(env.PATH).toContain(join(fixture.root, '.opencode', 'bin'));
+  expect(env.PATH).toContain(process.platform === 'win32' ? join(fixture.root, 'AppData', 'Roaming', 'npm') : '/opt/homebrew/bin');
   expect(findExecutable("opencode", env, fixture.opencode)).toBe(fixture.opencode);
   expect(() => findExecutable("opencode", env, "/nonexistent/ocedit-fixture")).toThrow("找不到 opencode");
 });

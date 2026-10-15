@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
-import { mkdtemp, mkdir, chmod, writeFile, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fixtureExecutable } from './executable';
 
 export async function createFixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ocedit-test-")));
@@ -35,8 +36,7 @@ export async function createFixture() {
   }
   db.close();
   await writeFile(join(root, "session.json"), JSON.stringify(session));
-  const opencode = join(root, "opencode with spaces");
-  await writeFile(opencode, `#!${process.execPath}
+  const opencode = await fixtureExecutable(join(root, "opencode with spaces"), `
 import { Database } from 'bun:sqlite';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const root = ${JSON.stringify(root)};
@@ -59,7 +59,6 @@ else if (args[0] === 'export') {
   console.log('Imported');
 } else process.exit(1);
 `);
-  await chmod(opencode, 0o755);
   return { root, opencode, session, directory };
 }
 

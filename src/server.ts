@@ -1,7 +1,7 @@
 import { sessionId, messageId, partId } from "./ids";
 import { fromV2, toV2 } from "./v2";
 import { mkdtemp, open, readFile, rm, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
 const PORT = Number(process.env.OCEDIT_PORT ?? 17654);
@@ -11,9 +11,11 @@ const OPENCODE = process.env.OCEDIT_OPENCODE || "opencode";
 const INDEX_HTML = import.meta.dir + "/index.html";
 
 function openBrowser(url: string) {
-  const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+  const command = process.platform === "win32"
+    ? ["rundll32.exe", "url.dll,FileProtocolHandler", url]
+    : [process.platform === "darwin" ? "open" : "xdg-open", url];
   try {
-    Bun.spawn({ cmd: [cmd, url], stdout: "ignore", stderr: "ignore" });
+    Bun.spawn({ cmd: command, stdout: "ignore", stderr: "ignore", windowsHide: true });
   } catch {}
 }
 
@@ -30,13 +32,13 @@ let server: ReturnType<typeof Bun.serve> | null = null;
 let detected: { v2: boolean; path: string } | undefined;
 function runtime(): { v2: boolean; path: string } {
   if (detected) return detected;
-  const version = Bun.spawnSync({ cmd: [OPENCODE, "--version"], stdin: "ignore" });
+  const version = Bun.spawnSync({ cmd: [OPENCODE, "--version"], stdin: "ignore", windowsHide: true });
   const match = version.stdout.toString().match(/(?:^|\s)v?(\d+)\./);
   if (version.exitCode !== 0 || !match) throw new Error(`无法检测 OpenCode 版本：${version.stderr.toString().slice(0, 500)}`);
   const major = Number(match[1]);
   if (major !== 1 && major !== 2) throw new Error(`暂不支持 OpenCode ${major}`);
   const v2 = major === 2;
-  const r = Bun.spawnSync({ cmd: [OPENCODE, ...(v2 ? ["debug", "paths"] : ["db", "path"])], stdin: "ignore" });
+  const r = Bun.spawnSync({ cmd: [OPENCODE, ...(v2 ? ["debug", "paths"] : ["db", "path"])], stdin: "ignore", windowsHide: true });
   const output = r.stdout.toString().replace(/\x1b\[[0-9;]*m/g, "");
   const path = v2 ? output.match(/^db\s+(.+)$/m)?.[1]?.trim() : output.trim();
   if (r.exitCode !== 0 || !path) throw new Error(`无法读取 OpenCode 数据库路径：${r.stderr.toString().slice(0, 500)}`);
@@ -87,8 +89,9 @@ async function listSessions(req: Request): Promise<Response> {
       whereParams.push(`%${q}%`, `%${q}%`);
     }
     if (dir) {
-      conditions.push(`s.directory = ?`);
-      whereParams.push(dir);
+      // OpenCode v2 stores forward slashes; the Windows folder picker returns backslashes.
+      conditions.push(process.platform === 'win32' ? `replace(s.directory, char(92), '/') = ? COLLATE NOCASE` : `s.directory = ?`);
+      whereParams.push(process.platform === 'win32' ? dir.replaceAll('\\', '/') : dir);
     }
     if (!includeSub) {
       conditions.push(`s.parent_id IS NULL`);
@@ -136,7 +139,7 @@ async function listDirs(): Promise<Response> {
     const rows = db.prepare(
       `SELECT DISTINCT directory FROM ${sessionTable()} ORDER BY directory;`,
     ).all() as Record<string, unknown>[];
-    return json({ home: process.env.HOME || "", dirs: rows.map((r) => r.directory) });
+    return json({ home: homedir(), dirs: rows.map((r) => r.directory) });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }
@@ -152,7 +155,7 @@ async function getSession(id: string): Promise<Response> {
     try {
       // OpenCode exits before large asynchronous pipe writes finish. A regular
       // file descriptor makes stdout writes synchronous and preserves all JSON.
-      r = Bun.spawnSync({ cmd: [...transferCommand("export"), id], stdout: output.fd, stderr: "pipe", stdin: "ignore" });
+      r = Bun.spawnSync({ cmd: [...transferCommand("export"), id], stdout: output.fd, stderr: "pipe", stdin: "ignore", windowsHide: true });
     } finally {
       await output.close();
     }
@@ -261,6 +264,7 @@ async function cloneSession(id: string, req: Request): Promise<Response> {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
+      windowsHide: true,
     });
     if (r.exitCode !== 0 || (v2 && !r.stdout.toString().includes(`Imported session: ${newId}`))) {
       const err = (r.stderr?.toString() ?? "") + (r.stdout?.toString() ?? "");

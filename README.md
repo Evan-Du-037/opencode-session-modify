@@ -2,7 +2,33 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A desktop tool for browsing and editing local OpenCode sessions. It automatically detects OpenCode v1 or v2 and saves edits as a **new session** through the official import command, leaving the original session unchanged. Verified with OpenCode **v2.0.26**.
+A desktop tool for browsing and editing local OpenCode sessions. It automatically detects OpenCode v1 or v2 and saves edits as a **new session** through the official import command, leaving the original session unchanged. The Windows branch targets OpenCode V2; the previous Windows V1 implementation is preserved on `windows-v1`.
+
+## Windows desktop app
+
+Open `dist/OpenCode Session Editor-win32-x64/OpenCode Session Editor.exe`. Keep the entire application directory together: the executable needs the adjacent DLLs and `resources` directory. You can move the folder and create a Windows shortcut to its executable. No browser, terminal, or separately installed Bun is needed to run the packaged app.
+
+OpenCode must be installed. The app searches PATH, the user Bun/OpenCode bin folders, and the npm global prefix under `%APPDATA%/npm`. It detects the native `@opencode/cli/bin/opencode.exe` behind npm's command shim. For a custom installation, set `OCEDIT_OPENCODE` to the full **`.exe`** path, not `opencode.cmd`.
+
+The app uses a single window, offers native folder selection and clipboard access, asks before discarding unsaved edits, and stops its owned backend when closed. Windows folder-picker paths work with OpenCode's forward-slash directory storage. The portable build is not code-signed.
+
+Build from PowerShell with Node.js 22.12 or later, npm, Bun, and OpenCode installed:
+
+```powershell
+npm.cmd ci
+npm.cmd start
+npm.cmd test
+npm.cmd run build
+
+# Test the packaged window against disposable V2 sessions.
+# Set OCEDIT_REAL_OPENCODE only if automatic executable discovery is insufficient.
+$env:OCEDIT_REAL_OPENCODE = "$env:APPDATA/npm/node_modules/@opencode/cli/bin/opencode.exe"
+npm.cmd test
+$env:OCEDIT_TEST_V2 = "1"
+npm.cmd run test:app
+```
+
+Builds use the host platform and architecture. Windows uses an embedded `bun.exe`; macOS uses the original `.app` layout. The Unix `install.sh` and `shortcut.sh` scripts are for the legacy browser launcher, not installation of the Windows desktop app.
 
 ## Editing sessions
 
@@ -61,7 +87,7 @@ npm run test:app -- "dist/1.1.0/OpenCode Session Editor-darwin-arm64/OpenCode Se
 OCEDIT_TEST_V2=1 npm run test:app -- "dist/1.1.0/OpenCode Session Editor-darwin-arm64/OpenCode Session Editor.app"
 ```
 
-These paths assume Apple Silicon; the build script uses the current machine's architecture. The v2 desktop test defaults to `~/.opencode/bin/opencode`; set `OCEDIT_REAL_OPENCODE` if the executable is elsewhere.
+These paths assume Apple Silicon; the build script uses the current machine's architecture. The v2 desktop test uses the same executable discovery as the app; set `OCEDIT_REAL_OPENCODE` to override it.
 
 ## Implementation and tests
 

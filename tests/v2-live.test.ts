@@ -22,7 +22,8 @@ test.skipIf(!process.env.OCEDIT_REAL_OPENCODE)('installed OpenCode v2: list/sear
     expect(list.total).toBe(1);
     expect(list.sessions[0].snippet).toBe('测试回答');
     expect((await get('/api/sessions?dir=/missing')).total).toBe(0);
-    expect((await get('/api/dirs')).dirs).toEqual([fixture.directory]);
+    expect((await get('/api/dirs')).dirs.map((dir: string) => resolve(dir))).toEqual([resolve(fixture.directory)]);
+    expect((await get('/api/sessions?dir=' + encodeURIComponent(fixture.directory))).total).toBe(1);
     const path = '/api/session/' + fixture.session.info.id;
     const source = await get(path);
     const edited = structuredClone(source);

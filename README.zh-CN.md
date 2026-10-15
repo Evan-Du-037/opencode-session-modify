@@ -8,6 +8,31 @@ v2 使用 `opencode debug paths` 定位数据库，只读查询 `session_v2` / `
 
 工具调用默认折叠。点击工具摘要后，可分别展开输入、输出；左侧原始内容只读，右侧可编辑。JSON 输入会格式化显示并校验，长内容在编辑框内滚动；v1 工具输出支持普通文本和 JSON 文本，v2 工具输出使用上述 content 数组；失败调用也可修改错误输出。折叠或执行其他编辑操作时会保留草稿；存在格式错误时无法保存。
 
+## Windows 桌面应用
+
+双击 `dist/OpenCode Session Editor-win32-x64/OpenCode Session Editor.exe`。必须保留整个应用目录，包括旁边的 DLL 和 `resources`；可以整体移动目录，并为 `.exe` 创建快捷方式。应用内置 `bun.exe`，运行时不需要浏览器、终端或另装 Bun。
+
+本机仍需安装 OpenCode。应用查找 PATH、用户的 Bun/OpenCode bin 目录，以及 `%APPDATA%/npm`，并识别 npm 安装的 `@opencode/cli/bin/opencode.exe`。非标准安装可通过 `OCEDIT_OPENCODE` 指定完整的 **`.exe` 路径**，不要指向 `opencode.cmd`。
+
+支持单实例、原生目录选择、剪贴板、未保存修改提示和关闭时清理后端；目录筛选兼容 Windows 反斜杠和 OpenCode 存储的正斜杠。当前是未签名的便携应用目录。旧 Windows V1 实现在 `windows-v1` 分支，本分支基于支持 V2 的主线。
+
+构建需要 Node.js 22.12 或更新版本、npm、Bun 和 OpenCode。在 PowerShell 执行：
+
+```powershell
+npm.cmd ci
+npm.cmd start
+npm.cmd test
+npm.cmd run build
+
+# 使用临时数据验证真实 V2 CLI 和打包后的桌面界面。
+$env:OCEDIT_REAL_OPENCODE = "$env:APPDATA/npm/node_modules/@opencode/cli/bin/opencode.exe"
+npm.cmd test
+$env:OCEDIT_TEST_V2 = "1"
+npm.cmd run test:app
+```
+
+打包应用不依赖源码目录。`install.sh` 和 `shortcut.sh` 属于旧的 Unix 浏览器启动方式，不用于安装 Windows 桌面版。
+
 ## macOS 应用
 
 双击 `dist/1.1.0/OpenCode Session Editor-darwin-arm64/OpenCode Session Editor.app` 即可运行，也可以将它拖到「应用程序」目录。应用内置 Bun，无需开启终端或浏览器；本机仍需安装 OpenCode。

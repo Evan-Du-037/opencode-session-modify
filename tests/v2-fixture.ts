@@ -1,6 +1,8 @@
-import { mkdtemp, mkdir, chmod, writeFile, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fixtureExecutable } from './executable';
+const { findExecutable, runtimeEnv } = require('../electron/runtime.cjs');
 
 export function v2Session(directory: string) {
   const now = Date.now();
@@ -33,29 +35,23 @@ export async function createV2Fixture() {
   const directory = join(root, 'project with spaces');
   await mkdir(directory);
   const session = v2Session(directory);
-  const executable = process.env.OCEDIT_REAL_OPENCODE || join(process.env.HOME!, '.opencode/bin/opencode');
+  const executable = findExecutable('opencode', runtimeEnv(), process.env.OCEDIT_REAL_OPENCODE);
   const env = { ...process.env, XDG_DATA_HOME: join(root, 'data'), XDG_STATE_HOME: join(root, 'state'),
     XDG_CACHE_HOME: join(root, 'cache'), XDG_CONFIG_HOME: join(root, 'config'),
     OPENCODE_CONFIG: '', OPENCODE_CONFIG_CONTENT: '{}', OPENCODE_CONFIG_DIR: '' };
-  const opencode = join(root, 'opencode with spaces');
-  await writeFile(opencode, `#!${process.execPath}
+  const opencode = await fixtureExecutable(join(root, 'opencode with spaces'), `
 import { readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (args[0] === 'session' && args[1] === 'import') {
   writeFileSync(${JSON.stringify(join(root, 'import.json'))}, JSON.stringify({ payload: JSON.parse(readFileSync(args[2], 'utf8')), tmp: args[2], cwd: process.cwd() }));
 }
 const command = args[0] === 'session' ? [...args, '--standalone'] : args;
-const result = Bun.spawnSync({ cmd: [${JSON.stringify(executable)}, ...command], env: ${JSON.stringify(Object.fromEntries(Object.entries(env).filter(([key]) => key.startsWith('XDG_') || key.startsWith('OPENCODE_CONFIG'))))} , stdin: 'ignore', stdout: 'inherit', stderr: 'inherit' });
+const result = Bun.spawnSync({ cmd: [${JSON.stringify(executable)}, ...command], env: { ...process.env, ...${JSON.stringify(Object.fromEntries(Object.entries(env).filter(([key]) => key.startsWith('XDG_') || key.startsWith('OPENCODE_CONFIG'))))}} , stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', windowsHide: true });
 process.exit(result.exitCode);
 `);
-  // Keep normal environment (PATH, HOME) as well as isolated config in wrapper.
-  let wrapper = await Bun.file(opencode).text();
-  wrapper = wrapper.replace('env: {', 'env: { ...process.env,');
-  await writeFile(opencode, wrapper);
-  await chmod(opencode, 0o755);
   const file = join(root, 'session.json');
   await writeFile(file, JSON.stringify(session));
-  const imported = Bun.spawnSync({ cmd: [opencode, 'session', 'import', file, '--directory', directory], cwd: root });
+  const imported = Bun.spawnSync({ cmd: [opencode, 'session', 'import', file, '--directory', directory], cwd: root, windowsHide: true });
   if (imported.exitCode !== 0 || !imported.stdout.toString().includes('Imported session:')) throw new Error(imported.stderr.toString());
   return { root, directory, opencode, session };
 }
